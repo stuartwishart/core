@@ -44,6 +44,7 @@ SENSORS = {
     ),
     "lifetime_consumption": ("Envoy Lifetime Energy Consumption", ENERGY_WATT_HOUR),
     "inverters": ("Envoy Inverter", POWER_WATT),
+    "daily_inverters": ("Envoy Inverter Today's Energy Production", ENERGY_WATT_HOUR),
 }
 
 ICON = "mdi:flash"
