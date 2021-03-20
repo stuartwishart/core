@@ -26,6 +26,9 @@ from homeassistant.helpers.update_coordinator import (
     UpdateFailed,
 )
 
+from homeassistant.util.dt import as_timestamp
+from homeassistant.util.dt import utcnow
+
 _LOGGER = logging.getLogger(__name__)
 
 SENSORS = {
@@ -44,11 +47,16 @@ SENSORS = {
     ),
     "lifetime_consumption": ("Envoy Lifetime Energy Consumption", ENERGY_WATT_HOUR),
     "inverters": ("Envoy Inverter", POWER_WATT),
-    "daily_inverters": ("Envoy Inverter Today's Energy Production", ENERGY_WATT_HOUR),
 }
 
 ICON = "mdi:flash"
 CONST_DEFAULT_HOST = "envoy"
+
+"""Delay between Inverter production updates in minutes."""
+CONF_INVERTER_UPDATE_PERIOD = "inverter_update_period"
+
+"""Logging rate of Iverters"""
+CONF_INVERTER_LOGGING_FULL = "inverter_logging_full"
 
 SCAN_INTERVAL = timedelta(seconds=60)
 
@@ -61,6 +69,9 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
             cv.ensure_list, [vol.In(list(SENSORS))]
         ),
         vol.Optional(CONF_NAME, default=""): cv.string,
+        vol.Optional(CONF_INVERTER_UPDATE_PERIOD, default=1): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=60)),
+        vol.Optional(CONF_INVERTER_LOGGING_FULL, default=True): cv.boolean,
     }
 )
 
@@ -74,6 +85,11 @@ async def async_setup_platform(
     name = config[CONF_NAME]
     username = config[CONF_USERNAME]
     password = config[CONF_PASSWORD]
+    inverter_update_time_sec = int(config[CONF_INVERTER_UPDATE_PERIOD]) * 60
+    inverter_logging_full = config[CONF_INVERTER_LOGGING_FULL]
+    
+    next_inverter_update = as_timestamp(utcnow())
+    _LOGGER.debug("next_inverter_update: %d", next_inverter_update)
 
     if "inverters" in monitored_conditions:
         envoy_reader = EnvoyReader(ip_address, username, password, inverters=True)
@@ -91,19 +107,35 @@ async def async_setup_platform(
     async def async_update_data():
         """Fetch data from API endpoint."""
         data = {}
-        async with async_timeout.timeout(30):
+        nonlocal next_inverter_update
+        
+        tsNow = as_timestamp(utcnow())
+        _LOGGER.debug("tsNow: %d", tsNow)
+        if tsNow > next_inverter_update:
+#        if as_timestamp(utcnow()) > next_inverter_update:
+            getInverters = True
+            _LOGGER.debug("getInverters = True")
+        else:
+            getInverters = False
+            _LOGGER.debug("getInverters = False")
+            
+        async with async_timeout.timeout(30): 
             try:
-                await envoy_reader.getData()
+                await envoy_reader.getData(getInverters)
             except httpx.HTTPError as err:
                 raise UpdateFailed(f"Error communicating with API: {err}") from err
 
             for condition in monitored_conditions:
                 if condition != "inverters":
                     data[condition] = await getattr(envoy_reader, condition)()
-                else:
+                elif getInverters or inverter_logging_full:
                     data["inverters_production"] = await getattr(
                         envoy_reader, "inverters_production"
                     )()
+                    
+                    if getInverters:
+                        next_inverter_update += inverter_update_time_sec
+                        _LOGGER.debug("next_inverter_update: %d", next_inverter_update)
 
             _LOGGER.debug("Retrieved data from API: %s", data)
 
